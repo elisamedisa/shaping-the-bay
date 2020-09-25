@@ -5,7 +5,42 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+
 ```
+
+```{r load health data, include=FALSE}
+health_full <- read_csv("https://chronicdata.cdc.gov/api/views/6vp6-wxuq/rows.csv?accessType=DOWNLOAD")
+health_ca <- filter(health_full, StateAbbr == 'CA')
+
+```
+
+```{r load electricity data, include=F}
+pge_19_q1_elec <- read_csv("PGE_2019_Q1_ElectricUsageByZip.csv")
+pge_19_q2_elec <- read_csv("PGE_2019_Q2_ElectricUsageByZip.csv")
+pge_19_q3_elec <- read_csv("PGE_2019_Q3_ElectricUsageByZip.csv")
+pge_19_q4_elec <- read_csv("PGE_2019_Q4_ElectricUsageByZip.csv")
+```
+
+
+```{r save health data}
+
+write_csv(health_ca, "health_ca.csv")
+saveRDS(health_ca,"health_ca.rds")
+
+health_ca <- readRDS('health_ca.rds')
+
+save(health_ca, pge_19_q1_elec, file = "working_datasets.rda")
+load(“working_datasets.rda”)
+
+# SAVE POINT
+# save.image("progress1.rda")
+# load(“progress1.rda”)
+
+```
+
+
 
 ## R Markdown
 

@@ -1,0 +1,101 @@
+---
+title: "chapter2_microdata"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = F, error = F)
+
+install.packages("devtools")
+
+devtools::install_github("walkerke/tidycensus")
+
+library(tidycensus)
+library(tigris)
+census_api_key("e0df904ead222e4e2085d77c3a3edb8687fb35b6")
+
+pums_vars_2018 <-
+  pums_variables %>%
+  filter(year == 2018, survey == "acs5")
+
+pums_vars_2018_distinct_hh <-
+  pums_vars_2018 %>%
+  distinct(var_code,var_label,data_type,level) %>%
+  filter(level == "housing")
+
+ca_pums <- get_pums(
+  variables = c(
+    "PUMA",
+    "NP",
+    "HHL",
+    "HINCP",
+    "TEN"
+  ),
+  state = "CA",
+  survey = "acs5",
+  recode = T
+)
+
+ca_pumas <-
+  pumas("CA", cb = T, progress_bar = F)
+
+bay_pumas <-
+  ca_pumas %>%
+  st_centroid() %>%
+  .[bay_counties, ] %>%
+  st_set_geometry(NULL) %>%
+  left_join(ca_pumas %>% select(GEOID10)) %>%
+  st_as_sf()
+
+bay_pums <-
+  ca_pums %>%
+  filter(PUMA %in% bay_pumas$PUMACE10)
+
+```
+
+```{r create summary statistics}
+
+bay_pums_example <-
+  bay_pums %>%
+  filter(!duplicated(SERIALNO)) %>%
+  mutate(
+    nonenglish_renter_lowinc = ifelse(
+      (HHL_label != "English only") &
+      (TEN_label == "Rented") & 
+      (HINCP < 100000),
+    WGTP,
+    0
+    )
+  ) %>%
+  
+pums_pal <- colorNumeric(
+  palette = "Oranges",
+  domain = bay_pums_example$perc_nonenglish_renter_lowinc
+)
+
+leaflet() %>%
+  addTiles() %>% 
+  addPolygons(
+    data = bay_pums_example,
+    fillColor = ~pums_pal(perc_nonenglish_renter_lowinc),
+    color = "white",
+    opacity = 0.5,
+    fillOpacity = 0.5,
+    weight = 1,
+    label = ~paste0(
+      round(perc_nonenglish_renter_lowinc), 
+      "% non-English-speaking renter households making less than $100K"
+    ),
+    highlightOptions = highlightOptions(
+      weight = 2,
+      opacity = 1
+    )
+  ) %>% 
+  addLegend(
+    data = bay_pums_example,
+    pal = pums_pal,
+    values = ~perc_nonenglish_renter_lowinc,
+    title = "% non-English-speaking<br>renter households<br>making less than $100K"
+  )
+```
+

@@ -1,0 +1,153 @@
+---
+title: "chapter2_spatial_subsets"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = F, error = F)
+
+library(tigris)
+library(sf)
+library(leaflet)
+library(tidyverse)
+
+bay_pdas <- st_read("https://opendata.arcgis.com/datasets/36dd7a36576f42d4a3d6b0708e3982f4_0.geojson")
+
+
+smc_blockgroups <-
+  block_groups("CA","San Mateo",cb = T,progress_bar = F) %>%
+  st_transform(st_crs(bay_pdas))
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addPolygons(
+    data = bay_pdas,
+    stroke = F,
+    fillOpacity = 0.5
+  ) %>%
+  addPolygons(
+    data = smc_blockgroups,
+    color = "red",
+    weight = 0.75,
+    fill = F
+  )
+```
+```{r}
+
+smc_pdas <-
+  bay_pdas %>%
+  filter(county == "San Mateo")
+
+smc_cbg_pop <-
+  getCensus(
+    name = "acs/acs5",
+    vintage = 2018,
+    region = "block group:*",
+    regionin = "state:06+county:081",
+    vars = "B01001_001E"
+  ) %>%
+  transmute(
+    cbg = paste0(state,county,tract,block_group),
+    pop = B01001_001E
+  ) %>%
+  left_join(
+    smc_blockgroups %>%
+      select(GEOID),
+    by = c("cbg" = "GEOID")
+  ) %>%
+  st_as_sf()
+
+smc_pda_pop1 <-
+  smc_cbg_pop[smc_pdas, ]
+
+sum(smc_pda_pop1$pop)
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.Positron) %>% 
+  addPolygons(
+    data = smc_pdas,
+    stroke = F,
+    fillOpacity = 0.5
+  ) %>%
+  addPolygons(
+    data = smc_pda_pop1,
+    color = "red",
+    weight = 0.75,
+    fill = F
+  )
+```
+
+```{r}
+
+smc_pda_pop2 <-
+  smc_cbg_pop %>%
+  st_centroid() %>%
+  .[smc_pdas,] %>%
+  st_set_geometry(NULL) %>%
+  left_join(smc_cbg_pop %>% select(cbg)) %>%
+  st_as_sf()
+
+sum(smc_pda_pop2$pop)
+
+leaflet() %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>% 
+  addPolygons(
+    data = smc_pdas,
+    stroke = F,
+    fillOpacity = 0.5
+  ) %>% 
+  addPolygons(
+    data = smc_pda_pop2,
+    color = "red",
+    weight = 0.75,
+    fill = F
+  )
+```
+
+```{r, message = F, error = F, warning = F}
+
+smc_cbg_pop_area <- 
+  smc_cbg_pop %>%
+  st_transform(26910) %>%
+  mutate(area = st_area(.))
+
+smc_cbg_pop_intersection <-
+  smc_cbg_pop_area %>%
+  st_intersection(
+    smc_pdas %>%
+      st_transform(26910)
+  )
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addPolygons(
+    data = smc_pdas,
+    stroke = F,
+    fillOpacity = 0.5
+  ) %>%
+  addPolygons(
+    data = smc_cbg_pop_intersection %>%
+      st_transform(4326),
+    color = "red",
+    weight = 0.75,
+    fill = F
+  )
+```
+
+```{r}
+
+smc_pda_pop3 <-
+  smc_cbg_pop %>%
+  st_transform(26910) %>%
+  mutate(original_area = st_area(.)) %>%
+  st_intersection(
+    smc_pdas %>%
+      st_transform(26910)
+  ) %>%
+  mutate(
+    leftover_area = st_area(.),
+    perc_area = leftover_area / original_area,
+    pop = pop * perc_area
+  )
+
+sum(smc_pda_pop3$pop) %>% round()

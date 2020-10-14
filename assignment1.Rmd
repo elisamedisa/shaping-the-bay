@@ -255,6 +255,7 @@ Let's take a closer look at how COVID has changed patterns of energy use across 
 ```{r create COVID residential usage datasets, include = FALSE}
 
 pge_bay_elec$TOTALKBTU <- pge_bay_elec$TOTALKWH*3.412
+
 res_elec_preCOVID <- 
   pge_bay_elec %>%
   filter(CUSTOMERCLASS %in% c('Elec- Residential')) %>%
@@ -265,6 +266,37 @@ res_elec_preCOVID <-
     PREKBTU = 
       mean(
         TOTALKBTU,
+        na.rm = T
+        ) %>%
+      na.omit()
+  )
+
+res_elec_postCOVID <-
+  pge_bay_elec %>%
+  filter(CUSTOMERCLASS %in% c('Elec- Residential')) %>%
+  filter(YEAR == 2020) %>%
+  filter(MONTH %in% c(4,5,6)) %>%
+  group_by(ZIPCODE) %>%
+  summarize(
+    POSTKBTU = 
+      mean(
+        TOTALKWH*3.412,
+        na.rm = T
+      )
+  ) %>%
+  na.omit()
+
+
+avg_res_elec_postCOVID <-
+  pge_bay_elec %>%
+  filter(CUSTOMERCLASS %in% c('Elec- Residential')) %>%
+  filter(YEAR == 2020) %>%
+  filter(MONTH %in% c(4,5,6)) %>%
+  group_by(ZIPCODE) %>%
+  summarize(
+    POSTAVG = 
+      mean(
+        AVERAGEKWH*3.412,
         na.rm = T
         ) %>%
       na.omit()
@@ -286,20 +318,6 @@ avg_res_elec_preCOVID <-
   na.omit()
 
 
-avg_res_elec_postCOVID <-
-  pge_bay_elec %>%
-  filter(CUSTOMERCLASS %in% c('Elec- Residential')) %>%
-  filter(YEAR == 2020) %>%
-  filter(MONTH %in% c(4,5,6)) %>%
-  group_by(ZIPCODE) %>%
-  summarize(
-    POSTAVG = 
-      mean(
-        AVERAGEKWH*3.412,
-        na.rm = T
-        ) %>%
-      na.omit()
-  )
 
 res_elec_change <-
   left_join(res_elec_preCOVID,res_elec_postCOVID) %>%
@@ -437,7 +455,8 @@ res_pal <- colorNumeric(
 leaflet() %>%
   addProviderTiles(providers$CartoDB.Positron) %>%
   addPolygons(
-    data = res_elec_change,
+    data = res_elec_change %>%
+      filter(!is.na(CHANGE)),
     fillColor = ~res_pal(CHANGE),
     color = "white",
     opacity = 0.5,

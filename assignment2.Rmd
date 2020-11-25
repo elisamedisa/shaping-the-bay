@@ -18,24 +18,28 @@ library(leaflet)
 library(censusapi)
 library(tidycensus)
 library(rmarkdown)
+library(mapboxapi)
 
-# Sys.setenv(CENSUS_KEY="e0df904ead222e4e2085d77c3a3edb8687fb35b6")
+Sys.setenv(CENSUS_KEY="e0df904ead222e4e2085d77c3a3edb8687fb35b6")
 
 # acs_vars_2018 <- readRDS("ACS2018 metadata.rds")
 
-census_api_key("e0df904ead222e4e2085d77c3a3edb8687fb35b6", overwrite = FALSE, install = FALSE)
+census_api_key(
+  "e0df904ead222e4e2085d77c3a3edb8687fb35b6", 
+  overwrite = FALSE, 
+  install = FALSE)
 
 acs_vars_2018 <-
   listCensusMetadata(
     name = "2018/acs/acs5/subject",
     type = "variables"
   )
-saveRDS('acs_vars_2018',"ACS2018 subject metadata.rds")
+
+# saveRDS('acs_vars_2018',"ACS2018 subject metadata.rds")
 
 ```
 
-```{r load data, warning = F}
-# acs_vars_2018 <- readRDS("ACS2018 subject metadata.rds")
+```{r load data, warning = F, message = F}
 
 census_race_labels <- c( 
   "White alone, not Hispanic or Latino",
@@ -78,10 +82,16 @@ sf_edu <-
     values_from = estimate
   ) %>%
   mutate(
-    `High school degree` = `High school graduate or higher` - `Bachelor's degree or higher`,
-    `No high school degree` = `NA` - `High school graduate or higher`,
+    `High school degree` = 
+      `High school graduate or higher` - `Bachelor's degree or higher`,
+    `No high school degree` = 
+      `NA` - `High school graduate or higher`,
   ) %>%
-  select(race, `No high school degree`,`High school degree`,`Bachelor's degree or higher`) %>%
+  select(
+    race, 
+    `No high school degree`,
+    `High school degree`,
+    `Bachelor's degree or higher`) %>%
   bind_rows(summarise_all(., funs(if(is.numeric(.)) sum(.) else "Total"))) %>%
   pivot_longer(
     !c("race"),
@@ -91,9 +101,44 @@ sf_edu <-
 
 ```
 
-```{r make bar chart}
+```{r make stacked bar chart, message = F, error = F}
 
-sf_edu_bar <-
+sf_edu_bar_stacked <-
+  sf_edu %>%
+  ggplot() +
+  geom_bar(
+    aes(
+      x = race %>% factor(
+        c(rev(census_race_labels),"Total")),
+      y = estimate/1000,
+      fill = `Highest degree earned`
+    ),
+    stat = "identity",
+    position = "stack"
+  ) +
+  labs(
+    x = "",
+    y = "Population (in thousands)",
+    title = "San Francisco education level by race",
+    subtitle = "Aggregated data from 2013-2018 of education level by race 
+    for individuals over 25 years of age",
+    fill = "Highest degree earned"
+  ) +
+  coord_flip() +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "vertical"
+  )
+
+sf_edu_bar_stacked
+```
+The above table shows the total number of people in San Francisco of each race and education level. White and Asian individuals make up the majority of the population. 229,348 white people have bachelor's degrees or higher, more than the number for all other racial groups combined (146,407). 
+
+Next let's look at the fraction of populations in order to more easily compare education levels across races. 
+
+```{r make filled bar chart, message = F, error = F}
+
+sf_edu_bar_filled <-
   sf_edu %>%
   ggplot() +
   geom_bar(
@@ -110,7 +155,8 @@ sf_edu_bar <-
     x = "",
     y = "Fraction of population",
     title = "San Francisco education level by race",
-    subtitle = "Aggregated data from 2013-2018 of education level by race for individuals over 25 years of age",
+    subtitle = "Aggregated data from 2013-2018 of education level by race 
+    for individuals over 25 years of age",
     fill = "Highest degree earned"
   ) +
   coord_flip() +
@@ -119,7 +165,7 @@ sf_edu_bar <-
     legend.direction = "vertical"
   )
 
-sf_edu_bar
+sf_edu_bar_filled
 ```
 From the bar chart above, it is apparent that white people in San Francisco have the highest education on average. About 75% of them have bachelor's degrees or higher, and nearly all have at least a high school degree. By comparison, only 29% of black people in SF have college degrees or higher. The populations with the lowest percentage of bachelor's degrees were American Indian/Alaska Native and other races (not black, asian or American Indian). This speaks clearly to the racial inequities in education and their work force opportunities. 
 
@@ -242,7 +288,12 @@ sf_migration_this_year_18 <-getCensus(
   group_by(mobility,education) %>%
   summarize(estimate = sum(estimate))
   
-edu_levels = c("Less than high school graduate","High school graduate (includes equivalency)","Some college or associate's degree","Bachelor's degree","Graduate or professional degree")
+edu_levels <- c(
+  "Less than high school graduate",
+  "High school graduate (includes equivalency)",
+  "Some college or associate's degree",
+  "Bachelor's degree",
+  "Graduate or professional degree")
   
 sf_flows_by_edu <-
   rbind(
@@ -269,7 +320,8 @@ sf_flows_by_edu <-
     `Here this year`,Inflow,Outflow
   )
 
-paged_table(sf_flows_by_edu[order(match(sf_flows_by_edu$Education, edu_levels)),])
+paged_table(
+  sf_flows_by_edu[order(match(sf_flows_by_edu$Education, edu_levels)),])
 
 ```
 Both inflow and outflow for adults (people older than 25 years) with bachelor's degrees or graduate/professional degrees are much higher than for people with some college or less. 8% of people with college or graduate degrees in the city are people who have moved into SF in the past year. Almost 10% of those with college or graduate degrees who were here a year ago have moved out. This really speaks to the rapid turnover of people in the Bay Area, particularly those in tech and other high education hiring industries. It makes me wonder how much personal stake they have in city life, in its schools, public transit, policing, etc. How would a large turnover of people affect the psyche of the city? It's interesting looking at the external net numbers that all but high school graduate are negative (if only slightly; e.g. 2% decrease in bachelors and graduate degree holders). Why are people moving out of the city? Let's take a look at where they're going.
@@ -300,14 +352,19 @@ sf_migration_out_19 <-
     into = c(NA,NA,"mobility","education"),
     sep = "!!"
   ) %>%
-  filter(!is.na(education) & mobility %in% c("Moved to different county within same state:","Moved to different state:")) %>%
+  filter(!is.na(education) & mobility %in% c(
+    "Moved to different county within same state:",
+    "Moved to different state:")) %>%
   select(mobility,education,estimate) %>%
   pivot_wider(
     names_from = mobility,
     values_from = estimate
   ) %>%
   mutate(
-    `% Remained in state` = round(`Moved to different county within same state:`/(`Moved to different county within same state:` + `Moved to different state:`)*100)
+    `% Remained in state` = round(
+      `Moved to different county within same state:`/
+      (`Moved to different county within same state:` + 
+         `Moved to different state:`)*100)
   )
 
 paged_table(sf_migration_out_19)
@@ -316,7 +373,7 @@ The table tells us that 69% and 63% of people with bachelor's degrees and gradua
 
 We can also look at where people moving into the Bay Area came from.
 
-```{r, warning = F}
+```{r, warning = F, message = F}
 sf_migration_in_19 <-
   getCensus(
     name = "acs/acs1",
@@ -342,16 +399,26 @@ sf_migration_in_19 <-
     into = c(NA,NA,"mobility","education"),
     sep = "!!"
   ) %>%
-  filter(!is.na(education) & mobility %in% c('Moved from different county within same state:','Moved from different state:','Moved from abroad:')) %>%
+  filter(!is.na(education) & mobility %in% c(
+    'Moved from different county within same state:',
+    'Moved from different state:','Moved from abroad:')) %>%
   pivot_wider(
     names_from = mobility,
     values_from = estimate
   ) %>%
   transmute(
     education = education,
-    `% moved from CA county` = round(`Moved from different county within same state:`/(`Moved from different county within same state:` + `Moved from different state:` + `Moved from abroad:`)*100),
-    `% moved from different state` = round(`Moved from different state:`/(`Moved from different county within same state:` + `Moved from different state:` + `Moved from abroad:`)*100),
-    `% moved from abroad` = round(`Moved from abroad:`/(`Moved from different county within same state:` + `Moved from different state:` + `Moved from abroad:`)*100)
+    `% moved from CA county` = round(
+      `Moved from different county within same state:`/
+        (`Moved from different county within same state:` + 
+           `Moved from different state:` + `Moved from abroad:`)*100),
+    `% moved from different state` = round(
+      `Moved from different state:`/
+        (`Moved from different county within same state:` + 
+           `Moved from different state:` + `Moved from abroad:`)*100),
+    `% moved from abroad` = round(`Moved from abroad:`/
+        (`Moved from different county within same state:` + 
+           `Moved from different state:` + `Moved from abroad:`)*100)
   )
   
 paged_table(sf_migration_in_19)
@@ -361,7 +428,7 @@ Over 50% of people with some college or less have moved to San Francisco from an
 Returning to our original table of migration numbers, internal net flows are also relatively small compared to the total population. These take into account residents turning 25 (+ net) and residents dying (- net). They also take into account the educational development of residents. For example, a person who has gained a bachelors degree in the past year would show up as -1 in the category of "Some college or associate's degree" and a +1 in the category of "Bachelor's degree."
 
 
-Another important consideration with regards to education, particularly given the pandemic, is children's access to internet. Unfortunately we don't yet have data for 2020 from the census, but looking at the 2018 survey can give us an idea of numbers. These data come from PUMS and are filtered at the individual level for respondents between the ages of 5 and 18.
+Another important consideration with regards to education, particularly given the pandemic, is children's access to internet. Unfortunately we don't yet have data for 2020 from the census, but looking at the 2018 survey can give us an idea of numbers. These data come from PUMS and are filtered at the individual level for respondents in grades K-12.
 
 ```{r get puma data, warning = F, message = F, results='hide'}
 # Locate vars of interest
@@ -371,8 +438,17 @@ pums_vars_2018 <-
   distinct(var_code,var_label,data_type,level) %>%
   filter(level == "person")
 
+pums_race_labels <- 
+  pums_variables %>%
+  filter(year == 2018, survey == "acs1") %>%
+  filter(var_code == "RAC1P") %>%
+  select(
+    RAC1P = val_min,
+    RAC1P_label = val_label
+  )
+
 #Get IDs for PUMAs in SF
-sf_county <- counties("CA",cb = T, progress_bar = F) %>%
+sf_county <- counties("CA", progress_bar = F) %>%
   filter(NAME == "San Francisco")
 
 ca_pumas <-
@@ -391,29 +467,29 @@ sf_pums <- get_pums(
   variables = c(
     "ACCESS", #internet access
     "AGEP",
+    "SCHG",
     "RAC1P"
     ),
   state = "CA",
   puma = sf_pumas$PUMACE10,
   survey = "acs1",
   rep_weights = "person",
-  year = 2018,
-  recode = T
+  year = 2018
 ) %>%
-  select(SERIALNO,AGEP,ACCESS_label,RAC1P_label,PWGTP) %>%
-  filter(
-    PWGTP != 0 & AGEP %in% c(5:18) & ACCESS_label != "N/A (GQ/vacant)"
-  )
+  select(PUMA,SERIALNO,AGEP,SCHG,ACCESS,RAC1P,PWGTP) %>%
+  filter(PWGTP != 0 & SCHG < 13 & ACCESS != "b") %>%
+  left_join(pums_race_labels) %>%
+  select(-RAC1P)
 
 ```
 
-```{r filter puma data}
+```{r filter puma data, message = F,warning = F}
 
 sf_kids_internet <-
   sf_pums %>%
   mutate(
     ACCESS_label = ifelse(
-      (ACCESS_label != "No access to the Internet at this house, apartment, or mobile home"),
+      ACCESS %in% c(1,2),
       "Has internet",
       "Does not have internet"
     )
@@ -427,7 +503,8 @@ sf_kids_internet <-
     values_from = total
   ) %>%
   mutate(
-    `Percent without internet` = round(`Does not have internet`/(`Does not have internet`+`Has internet`)*100)
+    `Percent without internet` = round(
+      `Does not have internet`/(`Does not have internet`+`Has internet`)*100)
   ) %>%
   rename(
     Race = RAC1P_label
@@ -440,7 +517,139 @@ sum(sf_kids_internet$`Does not have internet`,na.rm = T)
 paged_table(sf_kids_internet)
 
 ```
-By our estimates, 3,679 children do not have access to internet in San Francisco county. This corresponds to 5% of the white and Asian children in the city, and 10% of black children. 
+By our estimates, 2,943 children do not have access to internet in San Francisco county. This corresponds to 2% of the white children, 4% of Asian children, 16% of black children and 8% of children of some other race alone (not including Native Hawaiian or Pacific Islander). 
 
-The numbers increase in uncertainty as we select more features to compare populations, and we should be increasingly cautious in interpreting the results as we increase this granularity. We have data from only 727 children in San Francisco, that are intended to reflect the characteristics of 82,773 residents of SF between the ages of 5 and 18. When we add information on race, the number of respondents in each category becomes even smaller. Particularly, the Native Pacific Islander and Two or More race categories have no respondents who said they did not have internet. It may be that people in this group were just not surveyed. However, the fact that twice as many black children are without internet compared to white and Asian children seems significant. Especially this year when school has transferred online, this represents a critical education opportunity gap.
+The numbers increase in uncertainty as we select more features to compare populations, and we should be increasingly cautious in interpreting the results as we increase this granularity. We have data from only 727 children in San Francisco, that are intended to reflect the characteristics of 78,904 children in SF in grades K-12. When we add information on race, the number of respondents in each category becomes even smaller. Particularly, the Native Pacific Islander and Two or More race categories have no respondents who said they did not have internet. It may be that people in this group were just not surveyed. However, the fact that twice as many black children are without internet compared to white and Asian children seems significant. Especially this year when school has transferred online, this represents a critical education opportunity gap.
+
+Finally, I'll expand this analysis to the entire Bay Area.
+
+```{r internet access in bay PUMAS, warning = F, message = F, results = "hide"}
+bay_county_names <-
+  c(
+    "Alameda",
+    "Contra Costa",
+    "Marin",
+    "Napa",
+    "San Francisco",
+    "San Mateo",
+    "Santa Clara",
+    "Solano",
+    "Sonoma"
+  )
+
+bay_counties <-
+  counties("CA", progress_bar = F) %>%
+  filter(NAME %in% bay_county_names)
+
+bay_pumas <- ca_pumas %>%
+  st_centroid() %>%
+  .[bay_counties, ] %>%
+  st_set_geometry(NULL) %>%
+  left_join(ca_pumas %>% select(GEOID10)) %>%
+  st_as_sf()
+
+bay_pums <- get_pums(
+  variables = c(
+    "ACCESS", #internet access
+    "AGEP",
+    "SCHG",
+    "RAC1P"
+    ),
+  state = "CA",
+  puma = bay_pumas$PUMACE10,
+  survey = "acs1",
+  rep_weights = "person",
+  year = 2018
+) %>%
+  select(PUMA,SERIALNO,AGEP,SCHG,ACCESS,RAC1P,PWGTP) %>%
+  filter(
+    PWGTP != 0 & SCHG < 13 & ACCESS != "b"
+  ) %>%
+  left_join(pums_race_labels) %>%
+  select(-RAC1P)
+```
+
+
+```{r map internet access in bay PUMAS, warning = F, message = F}
+bay_internet_map <-
+  bay_pums %>%
+  filter(ACCESS == 3) %>%
+  group_by(PUMA) %>%
+  summarise(
+    estimate = sum(PWGTP)
+  ) %>%
+  right_join(
+    bay_pumas %>% select(PUMACE10),
+    by = c("PUMA"="PUMACE10")
+  ) %>%
+  replace(
+    .,
+    is.na(.),
+    0
+  ) %>%
+  st_as_sf()
+
+
+internet_pal <- colorNumeric(
+  palette = "Blues",
+  domain = bay_internet_map$estimate
+)
+  
+  
+leaflet() %>% 
+  addMapboxTiles(
+    style_id = "light-v9",
+    username = "mapbox"
+  ) %>% 
+  addPolygons(
+    data = bay_internet_map,
+    fillColor = ~internet_pal(estimate),
+    fillOpacity = 0.75,
+    color = "white",
+    weight = 0.5,
+    label = ~estimate
+  ) %>% 
+  addLegend(
+    data = bay_internet_map,
+    pal = internet_pal,
+    values = ~estimate,
+    title = "Number of students without internet"
+  )
+
+sum(bay_internet_map$estimate)
+
+```
+
+In total, I estimate 26,310 children around the Bay Area are without access to internet. The regions with the greatest number of children without internet are south Oakland, southeast San Francisco (including the neighborhood of Hunter's Point), Santa Rosa, the PUMA that includes Atherton, Menlo Park and East Palo Alto, and downtown San Jose. I know that Oakland, Hunter's Point and East Palo Alto are all areas that skew lower-class and POC. I am curious whether Santa Rosa sticks out because of the disastrous Tubbs Fire in 2017 that destroyed a lot of homes in the area. Let's quickly assess equity by comparing the breakdown of all children by race to the breakdown of children without internet by race.
+
+```{r, message = F, warning = F}
+
+bay_internet_race <-
+  bay_pums %>%
+  mutate(
+    ACCESS_label = ifelse(
+      ACCESS %in% c(1,2),
+      "Has internet",
+      "Does not have internet"
+    )
+  ) %>%
+  group_by(RAC1P_label,ACCESS_label) %>%
+  summarize(
+    total = sum(PWGTP)
+  ) %>%
+  pivot_wider(
+    names_from = ACCESS_label,
+    values_from = total
+  ) %>%
+  mutate(
+    `Percent without internet` = round(
+      `Does not have internet`/(`Does not have internet`+`Has internet`)*100)
+  ) %>%
+  rename(Race = RAC1P_label)
+  
+
+paged_table(bay_internet_race)
+
+```
+The percentage of black children without internet is double the percentage of white children. The lack of internet access is most worrying among American Indian and Alaska Native children and Native Hawaiian/Pacific Islander Children; 9% of children from both categories have no internet (here I've summed the two categories in the table for American Indian and Alaska Native). There are clear racial disparities that persist at this larger scale as well.
 

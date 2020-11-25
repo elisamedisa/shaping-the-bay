@@ -4,25 +4,762 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, message = F, error = F)
+
+library(tidyverse)
+library(censusapi)
+
+Sys.setenv(CENSUS_KEY="e0df904ead222e4e2085d77c3a3edb8687fb35b6")
 ```
 
-## R Markdown
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+```{r, include=FALSE}
+start <- proc.time()
+sample <- runif(100000)
+time <- proc.time()-start
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+hist(sample)
 
-```{r cars}
-summary(cars)
+time
+
+
+round <- sample(
+  c(-0.5, 0.5),
+  size = 100,
+  replace = T,
+  prob = c(0.5,0.5)
+)
+
 ```
 
-## Including Plots
+```{r gaussian distribution}
 
-You can also embed plots, for example:
+sample <- 100000
+rounds <- 20
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+galton <-
+  rounds %>%
+  rerun(
+    sample(
+      c(-.5,.5),
+      size = sample,
+      replace = T,
+      prob = c(0.5,0.5)
+    )
+  ) %>%
+  reduce(rbind) %>%
+  colSums()
+
+hist(galton)
+
+normal_test <- 
+  rnorm(sample,sd = sqrt(5))
+
+ggplot() + 
+  geom_histogram(
+    aes(galton),
+    binwidth = 1
+  ) +
+  geom_density(
+    aes(
+      normal_test,
+      after_stat(count)
+    )
+  )
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+```{r Monte Carlo}
+
+acs_vars_2018_5yr <-
+  listCensusMetadata(
+    name = "2018/acs/acs5",
+    type = "variables"
+  )
+
+
+income_19_summary <-
+  getCensus(
+    name = "acs/acs1",
+    vintage = 2019,
+    region = "county:001,013,041,055,075,081,085,095,097",
+    regionin = "state:06",
+    vars = c("group(B19001)")
+  ) %>%
+  select(!c(GEO_ID,state,NAME) & !ends_with(c("EA","MA", "M"))) %>%
+  pivot_longer(
+    ends_with("E"),
+    names_to = "variable",
+    values_to = "estimate"
+  ) %>%
+  group_by(variable) %>%
+  summarize(estimate = sum(estimate)) %>%
+  left_join(
+    acs_vars_2018_5yr %>%
+      select(name,label),
+    by = c("variable"="name")
+  ) %>%
+  select(-variable)
+
+income_tiers <-
+  data.frame(
+    lower_end = c(NA, 0, 10000, 15000, 20000, 25000, 30000, 35000, 40000, 45000, 50000, 60000, 75000, 100000, 125000, 150000, 200000),
+    width = c(NA, 1000, rep(5000,8), 10000, 15000, rep(25000, 3), 50000, NA)
+  )
+
+income_tiers
+
+total<- income_19_summary$estimate[1]
+row <- 2
+cumulative <- income_19_summary$estimate[row]
+proportion <- cumulative/total
+
+while (proportion < 0.5) {
+  cumulative_lag <- cumulative
+  row <- row+1
+  cumulative <- cumulative +income_19_summary$estimate[row]
+  proportion <- cumulative/total
+}
+
+median <-
+  income_tiers$lower_end[row] +
+  (total/2 - cumulative_lag)/income_19_summary$estimate[row]*income_tiers$width[row]
+
+prettyNum(round(median),",")
+
+income_19_summary_moe <-
+  getCensus(
+    name = "acs/acs1",
+    vintage = 2019,
+    region = "county:001,013,041,055,075,081,085,095,097",
+    regionin = "state:06",
+    vars = c("group(B19001)")
+  ) %>%
+  select(!c(GEO_ID,state,NAME) & !ends_with(c("EA","MA","E"))) %>%
+  pivot_longer(
+    ends_with(c("M")),
+    names_to = "variable",
+    values_to = "estimate"
+  ) %>% 
+  group_by(variable) %>% 
+  summarize(estimate = sqrt(sum(estimate^2)))
+
+income_19_summary_moe
+
+income_19_summary_montecarlo <-
+  map2(
+    income_19_summary$estimate,
+    income_19_summary_moe$estimate/1.645,
+    function(x,y) rnorm(10000,x,y)
+  ) %>%
+  transpose()
+
+montecarlo_result <-
+  income_19_summary_montecarlo %>%
+  map(function(income){
+    
+    income <- income %>% unlist()
+    total <- income[1]
+    row <- 2
+    cumulative <- income[row]
+    proportion <- cumulative/total
+    
+    while (proportion < 0.5) {
+      cumulative_lag <- cumulative
+      row <- row + 1
+      cumulative <- cumulative + income[row]
+      proportion <- cumulative/total
+    }
+      
+    median <-
+      income_tiers$lower_end[row] + 
+      (total/2 - cumulative_lag)/income[row]*income_tiers$width[row]
+  }) %>%
+  unlist()
+
+hist(montecarlo_result)
+
+mean(montecarlo_result)
+sd(montecarlo_result*1.645)
+
+upper <- mean(montecarlo_result+1.645*sd(montecarlo_result))
+lower <- mean(montecarlo_result-1.645*sd(montecarlo_result))
+
+ggplot() + 
+  geom_histogram(
+    aes(montecarlo_result)
+  ) +
+  geom_vline(
+    aes(
+      xintercept = mean(montecarlo_result)
+    ),
+    colour = "red"
+  ) +
+  geom_vline(
+    aes(
+      xintercept = lower
+    ),
+    colour = "red"
+  ) + geom_vline(
+    aes(
+      xintercept = upper
+    ),
+    colour = "red"
+  ) + 
+  labs(
+    x = "Median Household Income ($)",
+    y = "# of Simulations",
+    title = "Monte Carlo simulation, Bay Area households"
+  )
+```
+
+```{r simple linear regression}
+
+bay_income_race_tract <- 
+  getCensus(
+    name = "acs/acs5",
+    vintage = 2018,
+    region = "tract:*",
+    regionin = "state:06+county:001,013,041,055,075,081,085,095,097",
+    vars = c(
+      "B19001A_001E",
+      "B19001_001E",
+      "B19001_014E",
+      "B19001_015E",
+      "B19001_016E",
+      "B19001_017E"
+    )
+  ) %>% 
+  transmute(
+    tract = paste0(state, county, tract),
+    perc_white = B19001A_001E / B19001_001E,
+    perc_over100k = (B19001_014E + B19001_015E + B19001_016E + B19001_017E) / B19001_001E
+  ) %>% 
+  filter(
+    !is.na(perc_white), 
+    !is.na(perc_over100k)
+  )
+
+ggplot(
+  data = bay_income_race_tract,
+  aes(
+      x = perc_white,
+      y = perc_over100k
+    )
+) +
+  geom_point() +
+  geom_smooth(method = "lm")
+
+slope <- 0
+yintercept <- mean(bay_income_race_tract$perc_over100k)
+best_fit_candidate <- slope * bay_income_race_tract$perc_white + yintercept
+residuals <- bay_income_race_tract$perc_over100k - best_fit_candidate
+sumsq_residuals <- sum(residuals^2)
+sumsq_residuals
+
+ggplot(
+  data = bay_income_race_tract,
+  aes(
+      x = perc_white,
+      y = perc_over100k
+    )
+) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  geom_line(
+    aes(
+      x = bay_income_race_tract$perc_white,
+      y = best_fit_candidate
+    ),
+    color = "red",
+    size = 1
+  )
+```
+
+```{r sum squares optimization}
+
+get_sumsq_residuals <- function(x) {
+  slope <- x[1]
+  yintercept <- x[2]
+  
+  best_fit_candidate <- slope*bay_income_race_tract$perc_white + yintercept
+  residuals <- bay_income_race_tract$perc_over100k - best_fit_candidate
+  
+  sumsq_residuals <- sum(residuals^2)
+}
+
+optimization <- optim(c(0,0),get_sumsq_residuals)
+optimization
+
+slope <- optimization$par[1]
+yintercept <- optimization$par[2]
+
+best_fit_candidate <- slope*bay_income_race_tract$perc_white + yintercept
+residuals <- bay_income_race_tract$perc_over100k - best_fit_candidate
+
+mean(residuals)
+plot(density(residuals))
+
+model <- lm(perc_over100k ~ perc_white, bay_income_race_tract)
+summary(model)
+
+predict(model,data.frame(perc_white = 0.5))
+
+```
+
+```{r pums regression}
+
+pums_vars_2018 <-
+  pums_variables %>%
+  filter(year == 2018, survey == "acs5")
+
+ca_pums <- get_pums(
+  variables = c(
+    "PUMA",
+    "NP",
+    "RAC1P",
+    "HINCP"
+  ),
+  state = "CA",
+  year = 2018,
+  survey = "acs5",
+  recode = T
+)
+
+ca_pumas <- pumas("CA", cb = T, progress_bar = F)
+
+bay_county_names <-
+  c("Alameda", 
+    "Contra Costa",
+    "Marin",
+    "Napa",
+    "San Francisco",
+    "San Mateo",
+    "Santa Clara",
+    "Solano",
+    "Sonoma")
+
+bay_counties <- counties("CA",cb=T,progress_bar = F) %>%
+  filter(NAME %in% bay_county_names)
+
+bay_pumas <- ca_pumas %>%
+  st_centroid() %>%
+  .[bay_counties,] %>%
+  st_set_geometry(NULL) %>%
+  left_join(ca_pumas %>% select(GEOID10)) %>%
+  st_as_sf()
+
+bay_pums <-
+  ca_pums %>%
+  filter(PUMA %in% bay_pumas$PUMACE10)
+
+bay_pums_regression <-
+  bay_pums %>%
+  filter(SPORDER ==1) %>%
+  mutate(
+    white = ifelse(
+      RAC1P_label == "White alone",
+      1,
+      0
+    )
+  )
+
+ggplot(
+  data = bay_pums_regression,
+  aes(
+    x = white,
+    y = HINCP
+  )
+) + 
+  geom_point()+
+  geom_smooth(method = "lm", se = F)
+
+model_pums <- lm(HINCP ~ white,bay_pums_regression, weights = WGTP)
+
+summary(model_pums)
+```
+```{r PGE data linear regression}
+
+years <- 2017:2020
+quarters <- 1:4
+
+pge_data <- NULL
+for (year in years) {
+  for (quarter in quarters) {
+    filename <- 
+      paste0("PGE data/PGE_",
+        year,
+        "_Q",
+        quarter,
+        "_ElectricUsageByZip.csv"
+      )
+    
+    temp <- read_csv(filename)
+    pge_data <-
+      rbind(pge_data,temp)
+  }
+}
+
+pge_avg_kwh <-
+  pge_data %>%
+  filter(CUSTOMERCLASS == "Elec- Residential") %>% 
+  group_by(YEAR, MONTH) %>% 
+  summarize(
+    TOTALCUSTOMERS = sum(TOTALCUSTOMERS, na.rm = T),
+    TOTALMONTHLYKWH = sum(TOTALKWH, na.rm = T)
+  ) %>% 
+  mutate(
+    AVGMONTHLYKWH = TOTALMONTHLYKWH/TOTALCUSTOMERS,
+    DATE = paste(YEAR,MONTH,"01",sep="-") %>%
+      as.Date()
+  )
+
+pge_avg_kwh %>% 
+  ggplot(
+    aes(
+      x = DATE,
+      y = AVGMONTHLYKWH
+    )
+  ) +
+  geom_line() + 
+  geom_smooth(method = "lm") +
+  labs(
+    x = "",
+    y = "Average kBTU/Customer",
+    title = "Residential Electricity Consumption in PG&E Territories"
+  )
+
+model_pge <- lm(AVGMONTHLYKWH ~ DATE, pge_avg_kwh)
+summary(model_pge)
+
+pge_avg_kwh %>% 
+  ggplot(
+    aes(
+      x = DATE,
+      y = model_pge$residuals
+    )
+  ) +
+  geom_line() + 
+  geom_smooth(method = "lm", se = F) +
+  labs(
+    x = "",
+    y = "Average kBTU/Customer",
+    title = "Residuals from previous regression"
+  )
+```
+```{r Sampling bias}
+library(tigris)
+library(tidyverse)
+library(censusapi)
+library(sf)
+library(leaflet)
+
+Sys.setenv(CENSUS_KEY = "e0df904ead222e4e2085d77c3a3edb8687fb35b6")
+
+acs_vars_2018_5yr <-
+  listCensusMetadata(
+    name = "2018/acs/acs5",
+    type = "variables"
+  )
+
+home_panel_summary <-
+  read_csv("Neighborhood_Patterns_June_2020/home_panel_summary.gz")
+
+bay_county_names <-
+  c(
+    "Alameda",
+    "Contra Costa",
+    "Marin",
+    "Napa",
+    "San Francisco",
+    "San Mateo",
+    "Santa Clara",
+    "Solano",
+    "Sonoma"
+  )
+
+bay_counties <- counties("CA",cb = T, progress_bar = F) %>%
+  filter(NAME %in% bay_county_names)
+
+bay_cbgs <- 
+  block_groups("CA",bay_county_names, cb = T, progress_bar = F) %>%
+  filter(COUNTYFP %in% bay_counties$COUNTYFP)
+
+bay_area_devices <- 
+  home_panel_summary %>%
+  filter(census_block_group %in% bay_cbgs$GEOID) %>%
+  select(
+    census_block_group,
+    number_devices_residing
+  )
+
+bay_cbg_pop <-
+  bay_counties$COUNTYFP %>%
+  map_dfr(function(x) {
+    getCensus(
+      name = "acs/acs5",
+      vintage = 2018,
+      region = "block group:*",
+      regionin = paste0("state:06+county:",x),
+      vars = "B01001_001E"
+    )
+  }) %>% 
+  transmute(
+    census_block_group = 
+      paste0(state,county,tract,block_group),
+    pop = B01001_001E
+  ) %>%
+  right_join(bay_area_devices) %>%
+  mutate(
+    coverage = number_devices_residing/pop,
+    scale_factor = pop/number_devices_residing
+  ) %>%
+  left_join(
+    bay_cbgs %>% select(GEOID),
+    by = c("census_block_group" = "GEOID")
+  ) %>%
+  st_as_sf()
+
+bay_cbg_pop %>%
+  ggplot(
+    aes(
+      x = pop,
+      y = number_devices_residing
+    )
+  ) +
+  geom_point()
+```
+```{r sampling bias - outliers cont'd}
+
+outlier_cbg <-
+  bay_cbg_pop %>%
+  arrange(desc(number_devices_residing)) %>%
+  .[1,]
+
+outlier_cbg$pop
+outlier_cbg$number_devices_residing
+
+outlier_cbg %>%
+  leaflet() %>%
+  addTiles() %>%
+  addPolygons()
+
+bay_cbg_pop %>%
+  ggplot(
+    aes(
+      x = pop,
+      y = scale_factor
+    )
+  ) +
+  geom_point()
+
+outlier_cbg <-
+  bay_cbg_pop %>% 
+  arrange(desc(scale_factor)) %>% 
+  .[1,]
+
+outlier_cbg$pop
+outlier_cbg$number_devices_residing
+
+outlier_cbg %>% 
+  leaflet() %>% 
+  addTiles() %>% 
+  addPolygons()
+
+bay_cbg_pop %>%
+  ggplot(
+    aes(
+      x = pop,
+      y = coverage
+    )
+  ) + geom_point()
+```
+```{r outliers cont'd}
+
+outliers <- 
+  bay_cbg_pop %>%
+  filter(scale_factor %in% boxplot.stats(scale_factor)$out)
+
+outliers_pal <- colorQuantile(
+  palette = "RdYlGn",
+  domain = outliers$scale_factor,
+  n = 10
+)
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addPolygons(
+    data = outliers,
+    color = ~outliers_pal(scale_factor),
+    label = ~scale_factor
+  )
+```
+
+```{r outliers more}
+
+bay_cbg_pop_clean <-
+  bay_cbg_pop %>%
+  arrange(desc(scale_factor)) %>%
+  .[-1, ] %>%
+  arrange(desc(number_devices_residing)) %>%
+  .[-1, ] %>%
+  filter(scale_factor > 0) %>%
+  filter(coverage < 1)
+
+bay_cbg_pop_clean %>%
+  ggplot(
+    aes(
+      x = pop,
+      y = number_devices_residing
+      
+    )
+  ) + geom_point() +
+  geom_smooth(method = lm)
+
+bay_cbg_elderly <-
+  bay_counties$COUNTYFP %>% 
+  map_dfr(function(x){
+    getCensus(
+      name = "acs/acs5",
+      vintage = 2018,
+      region = "block group:*",
+      regionin = paste0("state:06+county:",x),
+      vars = "group(B01001)"
+    )
+  }) %>% 
+  mutate(
+    cbg =
+      paste0(state,county,tract,block_group)
+  ) %>% 
+  select(!c(GEO_ID,state,county,tract,block_group,NAME) & !ends_with(c("EA","MA","M"))) %>%
+  pivot_longer(
+    ends_with("E"),
+    names_to = "variable",
+    values_to = "estimate"
+  ) %>%
+  left_join(
+    acs_vars_2018_5yr %>% 
+      select(name, label), 
+    by = c("variable" = "name")
+  ) %>% 
+  select(-variable) %>% 
+  separate(
+    label,
+    into = c(NA,NA,"sex","age"),
+    sep = "!!"
+  ) %>% 
+  filter(!is.na(age)) %>% 
+  mutate(
+    elderly = 
+      ifelse(
+        age %in% c(
+          "65 and 66 years",
+          "67 to 69 years",
+          "70 to 74 years",
+          "75 to 79 years",
+          "80 to 84 years",
+          "85 years and over"
+        ),
+        estimate,
+        NA
+      )
+  ) %>% 
+  group_by(cbg) %>% 
+  summarize(
+    elderly = sum(elderly, na.rm = T),
+    total_pop = sum(estimate, na.rm = T)
+  ) %>% 
+  mutate(
+    percent_elderly = elderly/total_pop
+  ) %>% 
+  filter(!is.na(percent_elderly))
+
+bay_cbg_elderly_join <-
+  bay_cbg_pop_clean %>%
+  left_join(
+    bay_cbg_elderly,
+    by = c("census_block_group" = "cbg")
+  )
+
+bay_cbg_elderly_join %>% 
+  ggplot(
+    aes(
+      x = percent_elderly,
+      y = coverage
+    )
+  ) +
+  geom_point() +
+  geom_smooth(method = lm)
+
+model <- lm(coverage ~ percent_elderly,bay_cbg_elderly_join)
+summary(model)
+```
+```{r multiple regression}
+
+bay_multiple_tract <-
+  getCensus(
+    name = "acs/acs5",
+    vintage = 2018,
+    region = "tract:*",
+    regionin = "state:06+county:001,013,041,055,075,081,085,095,097",
+    vars = c(
+      "B19001A_001E",
+      "B19001_001E",
+      "B19001_014E",
+      "B19001_015E",
+      "B19001_016E",
+      "B19001_017E",
+      "B15003_001E",
+      "B15003_021E",
+      "B15003_022E",
+      "B15003_023E",
+      "B15003_024E",
+      "B15003_025E"
+    )
+  ) %>%
+  transmute(
+    tract = paste0(state,county,tract),
+    perc_white = B19001A_001E/B19001_001E,
+    perc_over100k = (B19001_014E + B19001_015E + B19001_016E + B19001_017E) / B19001_001E,
+    perc_collegedegree = (B15003_021E + B15003_022E + B15003_023E + B15003_024E +B15003_025E) / B15003_001E
+  ) %>%
+  filter(
+    !is.na(perc_white),
+    !is.na(perc_over100k),
+    !is.na(perc_collegedegree)
+  )
+
+library(corrplot)
+
+correlationplot <- bay_multiple_tract %>%
+  select(perc_white, 
+         perc_collegedegree, 
+         perc_over100k
+         ) %>%
+  cor()
+
+
+corrplot(
+  correlationplot,
+  method = "number",
+  type = "upper"
+)
+
+ggplot(
+  data = bay_multiple_tract,
+  aes(
+    x = perc_collegedegree,
+    y = perc_over100k
+  )
+) +
+  geom_point() + 
+  geom_smooth(method = "lm")
+
+model <- lm (perc_over100k ~ perc_collegedegree, data = bay_multiple_tract)
+
+summary(model)
+```
+```{r}
+model <- lm(perc_over100k ~ perc_white + perc_collegedegree, bay_multiple_tract)
+summary(model)
+```
+

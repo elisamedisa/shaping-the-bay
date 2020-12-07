@@ -1,0 +1,1058 @@
+---
+title: "Assignment 8: Sea Level Rise in Pacifica"
+output: html_document
+---
+
+The town of Pacifica, located along the coast of the San Francisco peninsula, is vulnerable to a number of natural hazards ranging from landslides to flooding, fires, earthquakes and coastal erosion. The city lacks resources to manage many of the existing hazards, and climate change is expected to exacerbate these problems.
+
+One particularly prominent concern is sea level rise, which will likely increase flooding and erosion along the steep bluffs overlooking the ocean. The region of coast along which the town is situated is one of the fastest eroding regions in the state of California.
+
+At the same time, mounting pressures to create additional housing in the Bay Area are causing Pacifica government to push for increased development. The RHNA allocation for Pacifica for 2023-2031 is 1,933 new homes, a number which seems to be particularly influenced by its access to high opportunity areas (see https://abag.ca.gov/sites/default/files/rhna_methodology_report_2023-2031_finalposting.pdf). From the first and second maps below, you can get a sense of the racial and socio-economic population distributions across the city. In order to meet increasing housing demand and create a more welcoming and vibrant downtown area, the Pacifica government is pursuing a plan to redevelop the Sharp Park region just north of Mori Point.
+
+This is one of the most vulnerable regions of the city to sea level rise, and already sits behind a sea wall. The 2016 El Niño created a breach in the sea wall north of pier, and the city is facing costs of \$450,000 to repair damage to this 40 foot section. Replacing the entire seawall would cost around \$28 million. The San Mateo County Sea Level Rise Assessment lists this Beach Boulevard sea wall as an asset with high sensitivity, exposure and consequences, and low adaptive capacity (https://seachangesmc.org/wp-content/uploads/2018/03/Final_AVP_27_BeachBlvdSeawall_JN_MP.pdf). I sat in on a public meeting about the Sharp Park Specific Plan last week, where they discussed the current state of the sea wall, the assets it protects, and the options for enhancing protection moving forward. They are currently producing Benefit Cost Analyses for a few different options. I was quite shocked to see that without the seawall, coastal erosion would remove the entire area in yellow in the figure below by 2100. 
+
+! [Alt text]  (C:/Users/Elisa Boles/Documents/GitHub/shaping-the-bay/sharp park erosion map)
+
+I was interested in exploring what is at stake for this region given our projections of sea level rise (SLR), and decided to use the methods we have learned about in class to carry out an analysis of risk to buildings and personal vehicles in the region for multiple SLR projections. 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = F, error = F, warning = F)
+
+# library(remotes)
+library(tidyverse)
+library(sf)
+library(leaflet)
+library(mapboxapi)
+library(tigris)
+library(censusapi)
+library(raster)
+library(stars)
+library(rgeos)
+library(sp)
+
+Sys.setenv(CENSUS_KEY="e0df904ead222e4e2085d77c3a3edb8687fb35b6")
+
+# census_api_key(
+#   "e0df904ead222e4e2085d77c3a3edb8687fb35b6", 
+#   overwrite = FALSE, 
+#   install = FALSE)
+```
+
+First, I looked at a couple of demographic indices of racial and socio-economic distribution across the city. 
+```{r pacifica demographics, message = F, warning = F, error = F}
+
+acs_vars_2018_5yr <-
+  listCensusMetadata(
+    name = "2018/acs/acs5",
+    type = "variables"
+  )
+
+smc_cbgs <- block_groups("CA", county = "San Mateo", year = 2018, progress_bar = F) %>%
+  st_transform(4326)
+
+pacifica_boundary <- places("CA", cb = T, progress_bar = F) %>% 
+  filter(NAME == "Pacifica") %>%
+  st_transform(4326)
+
+pac_cbgs <- smc_cbgs %>%
+  st_centroid() %>%
+  .[pacifica_boundary, ] %>%
+  st_set_geometry(NULL) %>%
+  left_join(smc_cbgs) %>%
+  st_as_sf() %>%
+  rbind(
+    smc_cbgs %>%
+      filter(
+        GEOID %in% c('060816030004','060816033003')
+      )
+  )
+
+pac_demog <-
+  getCensus(
+    name = "acs/acs5",
+    vintage = 2018,
+    region = "block group:*", 
+    regionin = "state:06+county:081",
+    vars = c(
+      "B02001_001E",
+      "B02001_002E",
+      "B19001_001E",
+      "B19001_014E",
+      "B19001_015E",
+      "B19001_016E",
+      "B19001_017E")
+  ) %>%
+  transmute(
+    cbg =
+      paste0(state,county,tract,block_group),
+    pop = B02001_001E,
+    perc_nonwhite = (1 - B02001_002E/B02001_001E)*100,
+    perc_under100k = (1 - (B19001_014E + B19001_015E + B19001_016E + B19001_017E) / B19001_001E)*100
+  ) %>%
+  right_join(
+    pac_cbgs %>% dplyr::select(GEOID),
+    by = c("cbg" = "GEOID")
+  ) %>%
+  st_as_sf() %>%
+  st_transform(4326)
+
+pal_demog <- colorNumeric(
+  palette = "Reds",
+  domain = pac_demog$perc_nonwhite
+)
+
+pac_demog %>%
+  leaflet() %>%
+  addMapboxTiles( 
+    style_id = "light-v9",
+    username = "mapbox"
+  ) %>%
+  addPolygons(
+    fillColor = ~pal_demog(perc_nonwhite),
+    fillOpacity = 0.5,
+    label = ~paste0(round(perc_nonwhite),"%"),
+    color = "white"
+  ) %>%
+  addPolygons(
+    data = pacifica_boundary,
+    fillColor = 'none',
+    color = 'red',
+    stroke = 0.5
+  ) %>%
+  addLegend(
+    pal = pal_demog,
+    values = ~perc_nonwhite,
+    title = "% non-white<br>households"
+  )
+
+pac_demog %>%
+  leaflet() %>%
+  addMapboxTiles( 
+    style_id = "light-v9",
+    username = "mapbox"
+  ) %>%
+  addPolygons(
+    fillColor = ~pal_demog(perc_under100k),
+    fillOpacity = 0.5,
+    label = ~paste0(round(perc_under100k),"%"),
+    color = "white"
+  ) %>%
+  addPolygons(
+    data = pacifica_boundary,
+    fillColor = 'none',
+    color = 'red',
+    stroke = 0.5
+  ) %>%
+  addLegend(
+    pal = pal_demog,
+    values = ~perc_under100k,
+    title = "% households<br>with income<br>under $100k"
+  )
+  
+sum(pac_demog$perc_nonwhite*pac_demog$pop)/sum(pac_demog$pop)
+sum(pac_demog$perc_under100k*pac_demog$pop)/sum(pac_demog$pop)
+
+```
+The Pacifica population is predominantly white (65%), with the largest number of nonwhite households in the northern-most section of the city.
+
+About 42% of Pacifica households have income under \$100,000, though some regions have a higher fraction. The Sharp Park region has a particularly high percentage of low-income residents, with block groups ranging from 55-60% having income under \$100k. We also found in Chapter 6.1 that 38% of households in the PUMA that includes Pacifica are rent-burdened, meaning that they pay over 30% of their income to housing costs.
+
+Next, I downloaded flood exposure data from Our Coast Our Future for sea level rise scenarios of 0 to 300 cm, and storm return periods of 1, 20 and 100 years. Although we only analyzed flooding for SLR up to 100 cm in class, the H++ SLR scenario projects flooding of 10.2 ft (3.1 m) by 2100. The Ocean Protection Council's Sea Level Rise Guidance states that "H++ scenario may also be relevant to communities considering regional or general plans, climate action plans, local hazard mitigation plans, regional transportation plans, and other planning efforts, due to the interrelated nature of critical infrastructure, homes, businesses, etc" (p. 24). Hence it made sense to evaluate this level of risk for the Sharp Park Specific Plan region.
+
+Below I have mapped the flood exposure for the most extreme scenario of 3 m SLR and a 100 year storm.
+
+```{r Maximum flood exposure, message = F, warning = F, error = F}
+
+sp_cbgs <- pac_cbgs %>%
+  filter(GEOID %in% c("060816030004","060816030003","060816030002","060816030001")) %>%
+  dplyr::select(GEOID)
+
+raster_proj <- "+proj=utm +zone=10 +ellps=GRS80 +units=m +no_defs"
+
+# Get Building footprint data
+osm_bldg <- readRDS("osm_bldg.rds")
+
+sp_bldg <- osm_bldg[sp_cbgs, ]
+  # filter(type %in% c(NA,"house"))
+
+sp_bldg$cbg <- sp::over(as_Spatial(sp_bldg), as_Spatial(sp_cbgs)) %>%
+      dplyr::select(GEOID)
+sp_bldg <- sp_bldg %>%
+  cbind(
+    GEOID = sp_bldg$cbg
+  ) %>%
+  dplyr::select(-cbg)
+
+
+# Plot maximum flood with buildings
+slr <- 300
+rp <- 100 # return period
+
+max_filename <- paste0(
+  "smc_flood/cosmos_v3-1_",
+  rp,
+  "yr_storm_flood_depth_and_duration/flood_depth/slr",
+  str_pad(slr, 3, "left", "0"),
+  "_w",
+  str_pad(rp, 3, "left", "0"),
+  "_flood_depth/",
+  "SM07_flddepth_SLR",
+  str_pad(slr, 3, "left", "0"),
+  "_W",
+  str_pad(rp, 3, "left", "0"),
+  ".tif")
+
+
+max_flood <- raster(max_filename) %>%
+  crop(sp_cbgs %>%
+         st_transform(raster_proj)
+       ) %>%
+  projectRaster(
+    crs = projection(pacifica_boundary)
+    )
+
+values(max_flood)[values(max_flood) > 10000] <- NA
+
+flood_extent <- 
+      (max_flood > -Inf) %>% 
+      st_as_stars() %>% 
+      st_as_sf(merge = T) %>% 
+      st_set_crs(4326)
+
+pac_bldg_flooded_max <-
+  sp_bldg %>%
+  st_transform(4326) %>%
+  .[flood_extent, ]
+
+flood_pal <- colorNumeric(
+  palette = "Blues",
+  domain = values(max_flood),
+  na.color = "transparent"
+)
+
+leaflet() %>% 
+  addMapboxTiles(
+    style_id = "light-v9",
+    username = "mapbox"
+  ) %>% 
+  addRasterImage(
+    max_flood,
+    colors = flood_pal,
+    opacity = 0.75
+  ) %>%
+  addPolygons(
+    data = pac_bldg_flooded_max,
+    fill = F,
+    color = "red",
+    weight = 0.5
+  ) %>% 
+  addLegend(
+    pal = flood_pal,
+    values = values(max_flood),
+    title = "Flood depth, cm"
+  )
+```
+
+Next, I used the same technique to calculate the building exposure for each flood event.
+```{r get building exposure for each flood event, message = F, warning = F, error = F}
+pac_bldg_exposure <- NULL
+
+
+for(slr in c(0,25,50,75,100,150,200,300)) {
+  
+  for(rp in c(1,20,100)){
+    
+    filename <- paste0(
+  "smc_flood/cosmos_v3-1_",
+  rp,
+  "yr_storm_flood_depth_and_duration/flood_depth/slr",
+  str_pad(slr, 3, "left", "0"),
+  "_w",
+  str_pad(rp, 3, "left", "0"),
+  "_flood_depth/",
+  "SM07_flddepth_SLR",
+  str_pad(slr, 3, "left", "0"),
+  "_W",
+  str_pad(rp, 3, "left", "0"),
+  ".tif")
+    
+    # print(paste0("SLR",slr,"_RP",rp))
+    
+    flood <- raster(filename) %>%
+      crop(sp_cbgs %>% 
+             st_transform(raster_proj)
+           ) %>%
+      projectRaster(crs = projection(pacifica_boundary))
+    
+    values(flood)[values(flood) > 10000] <- NA
+    
+    flood_extent <- 
+      (flood > -Inf) %>% 
+      st_as_stars() %>% 
+      st_as_sf(merge = T) %>% 
+      st_set_crs(4326)
+    
+    pac_bldg_flooded <-
+      sp_bldg[flood_extent,]
+    
+    if (nrow(pac_bldg_flooded)>0) {
+      flood_crop <-
+        crop(flood, pac_bldg_flooded)
+    
+      flood_crop[is.na(flood_crop)] <- 0
+    
+      temp <-
+        extract(
+          flood_crop,
+          pac_bldg_flooded,
+          fun = mean
+        ) %>% 
+        as.data.frame() %>% 
+        rename(avg_depth = V1) %>% 
+        cbind(
+          pac_bldg_flooded %>% 
+            st_set_geometry(NULL) %>% 
+            dplyr::select(osm_id)
+        ) %>% 
+        mutate(
+          SLR = slr,
+          RP = rp
+        )
+    }
+    else {
+      temp <- data.frame(avg_depth = 0,osm_id = NA,SLR = slr,RP = rp)
+    }
+      
+      pac_bldg_exposure <- 
+        pac_bldg_exposure %>% 
+        rbind(temp)
+    
+  }
+  
+}
+
+#assume cars are at ground level 
+pac_bldg_exposure <-
+  pac_bldg_exposure %>%
+  mutate(
+    avg_depth = avg_depth*.0328084 # convert to feet
+  )
+```
+
+The next step was to estimate the number of vehicles in each block group, and distribute them across the residential buildings. I used county data from EMFAC to estimate vehicle ownership (of light duty automobiles and trucks) and how it will increase through 2050. Because EMFAC does not continue past 2050, I assumed 500,000 vehicles in San Mateo county in 2100. This is slightly more than the 2050 estimate and is based on the fact that EMFAC's vehicle ownership increases to slow down towards 2050. There is obviously a lot of uncertainty in vehicle ownership this far in the future. 
+
+I combined these numbers with block group level ACS data of vehicle ownership by household in Sharp Park to estimate total cars in the block group in the future, and then distributed these evenly across each household. Note that I did not attribute any cars to commercial, retail or school buildings in the area. One additional caveat is that there are often many vehicles parked right along the sea wall, as it is a popular destination for ocean viewing and fishing. The analysis assumes then that these vehicles would not be present during these scenarios, which is probably a reasonable assumption for major storm events as people would be avoiding the beach, but perhaps a less reasonable assumption for minimal flooding events. 
+
+```{r get vehicle information, warning = F, message = F}
+
+#get numbers for expected vehicle counts in future
+emfac <- 
+  read_csv("EMFAC2017-EI-2011Class-SanMateo2020-2030-2040-2050-Annual-20201204111157.csv", skip = 8) %>%
+  dplyr::select("Calendar Year","Population") %>%
+  group_by(`Calendar Year`) %>%
+  summarize(
+    estimate = sum(Population)
+  ) %>%
+  mutate(
+    increase = c(
+      1,
+      estimate[2]/estimate[1],
+      estimate[3]/estimate[1],
+      estimate[4]/estimate[1]
+      ),
+    `Calendar Year` = as.character(`Calendar Year`)
+  ) %>%
+  rename(year = "Calendar Year") %>%
+  rbind(
+    data.frame(
+      year = 2100,
+      estimate = 500000,
+      increase = 500000/322374.1
+    )
+  )
+
+#get census data for vehicle ownership
+pac_vehicles <-
+  getCensus(
+    name = "acs/acs5",
+    vintage = 2018,
+    region = "block group:*", 
+    regionin = "state:06+county:081",
+    vars = "group(B25044)"
+  ) %>%
+  mutate(
+    GEOID = paste0(state,county,tract,block_group)
+  ) %>%
+  dplyr::select(
+    !c(GEO_ID,state,county,tract,block_group,NAME) & !ends_with(c("EA","MA","M"))
+    ) %>%
+  pivot_longer(
+    ends_with("E"),
+    names_to = "variable",
+    values_to = "estimate"
+  ) %>%
+  left_join(
+    acs_vars_2018_5yr %>% 
+      dplyr::select(name, label), 
+    by = c("variable" = "name")
+  ) %>% 
+  dplyr::select(-variable) %>%
+  filter(
+    GEOID %in% c(
+      "060816030004",
+      "060816030003",
+      "060816030002",
+      "060816030001")
+    ) %>%
+  separate(
+    label,
+    into = c(NA,NA,"tenure","vehicles"),
+    sep = "!!"
+  ) %>%
+  filter(!is.na(vehicles)) %>%
+  mutate(
+    vehicles = as.numeric(substr(vehicles,1,1))
+  ) %>%
+  replace(.,is.na(.),0)
+
+# summarize by cbg
+pac_vehicle_stats <-
+  pac_vehicles %>%
+  group_by(GEOID) %>%
+  summarize(
+    "Total vehicles" = sum(estimate * vehicles)
+  ) %>%
+  left_join(
+    pac_vehicles %>%
+      filter(vehicles == 1) %>%
+      group_by(GEOID) %>%
+      summarize(`Households with only 1 car` = sum(estimate))
+    ) %>%
+  left_join(
+    sp_bldg %>%
+      filter(type %in% c("house",NA) & GEOID %in% sp_cbgs$GEOID) %>%
+      group_by(GEOID) %>%
+      summarize(
+        `Total Homes` = length(osm_id)
+      )
+  ) %>%
+  mutate(
+    `Total vehicles 2030` = round(
+      `Total vehicles` * emfac$estimate[2] / emfac$estimate[1]
+      ),
+    `Total vehicles 2040` = round(
+      `Total vehicles` * emfac$estimate[3] / emfac$estimate[1]
+      ),
+    `Total vehicles 2050` = round(
+      `Total vehicles` * emfac$estimate[4] / emfac$estimate[1]
+      )
+  )
+
+# Add vehicle count to each house in Sharp Park. 
+# All buildings not listed as house or NA were not allocated vehicles.
+sp_bldg_cars <- sp_bldg %>%
+  left_join(pac_vehicle_stats %>%
+              transmute(
+                GEOID = GEOID,
+                Vehicles2020 = round(`Total vehicles`/`Total Homes`),
+                Vehicles2030 = round(`Total vehicles 2030`/`Total Homes`),
+                Vehicles2040 = round(`Total vehicles 2040`/`Total Homes`),
+                Vehicles2050 = round(`Total vehicles 2050`/`Total Homes`),
+              )
+  ) %>%
+  mutate(
+    Vehicles2020 = ifelse(
+      type %in% c("house",NA),
+      Vehicles2020,
+      0),
+    Vehicles2030 = ifelse(
+      type %in% c("house",NA),
+      Vehicles2030,
+      0),
+    Vehicles2040 = ifelse(
+      type %in% c("house",NA),
+      Vehicles2040,
+      0),
+    Vehicles2050 = ifelse(
+      type %in% c("house",NA),
+      Vehicles2050,
+      0)
+    )
+
+pac_bldg_exposure <-
+  pac_bldg_exposure %>%
+  left_join(
+    sp_bldg_cars %>% 
+      dplyr::select(osm_id,Vehicles2020, Vehicles2050)
+    )
+
+```
+
+The next step was to calculate the vulnerability of buildings and vehicles to flooding. I used depth-damage curves from the U.S. Army Corps of Engineers to estimate the % damage from different depths of flooding (https://www.mvn.usace.army.mil/Portals/56/docs/PD/Donaldsv-Gulf.pdf). I used vehicle counts from 2050 and assumed cars would be parked mostly on the streets (at 0 ft elevation), whereas homes are elevated 2 ft as in the Chapter 8 analysis.
+
+```{r vulnerability, message = F, warning = F, error = F}
+
+library(mefa)
+
+house_vulnerability <- data.frame(
+  depth = c(-2:16),
+  perc_damage = c(
+    0,
+    0.025,
+    0.134,
+    0.233,
+    0.321,
+    0.401,
+    0.471,
+    0.532,
+    0.586,
+    0.632,
+    0.672,
+    0.705,
+    0.732,
+    0.754,
+    0.772,
+    0.785,
+    0.795,
+    0.802,
+    0.807
+  )
+)
+
+vehicle_vulnerability <- data.frame(
+  depth = c(0, 0.5, 1.0, 1.5, 2.0, 3.0, 10),
+  perc_damage = c(0, 0, .06, .15, .195, 1, 1)
+)
+
+
+
+pac_perc_damage <-
+  approx(
+    x = house_vulnerability$depth,
+    y = house_vulnerability$perc_damage,
+    xout = pac_bldg_exposure$avg_depth-2
+  ) %>%
+  .[2] %>%
+  as.data.frame() %>%
+  rename(house_perc_damage = y) %>%
+  cbind(pac_bldg_exposure) %>%
+  cbind(
+    approx(
+      x = vehicle_vulnerability$depth,
+      y = vehicle_vulnerability$perc_damage,
+      xout = pac_bldg_exposure$avg_depth
+    ) %>%
+    .[2] %>%
+    as.data.frame() %>%
+    rename(vehicle_perc_damage = y)
+  )
+
+
+pac_vehicle_perc_damage_plot <-
+  expand.grid(
+    osm_id = unique(pac_perc_damage$osm_id),
+    SLR = unique(pac_perc_damage$SLR),
+    RP = unique(pac_perc_damage$RP)
+  ) %>%
+  left_join(pac_perc_damage) %>%
+  mutate(
+    avg_depth = ifelse(
+      is.na(avg_depth),
+      0,
+      avg_depth
+    ),
+    vehicle_perc_damage = ifelse(
+      is.na(vehicle_perc_damage),
+      0,
+      vehicle_perc_damage
+    )
+  )
+
+# expand out to account for homes with more than 1 car
+for (i in 1:nrow(pac_vehicle_perc_damage_plot)) {
+  if (pac_vehicle_perc_damage_plot$Vehicles2050[i] > 1 & 
+      !is.na(pac_vehicle_perc_damage_plot$Vehicles2050[i])) {
+    pac_vehicle_perc_damage_plot <- rbind(
+      pac_vehicle_perc_damage_plot,
+      rep(
+        pac_vehicle_perc_damage_plot[i,], 
+        pac_vehicle_perc_damage_plot$Vehicles2050[i]-1
+        )
+    )
+  }
+}
+
+library(plotly)
+
+# Plot vehicle vulnerability
+pac_vehicle_perc_damage_plot <-
+  plot_ly() %>%
+  add_trace(
+    data = 
+      pac_vehicle_perc_damage_plot %>%
+      filter(RP == "100") %>%
+      mutate(
+        SLR = SLR %>% as.numeric()),
+    x = ~avg_depth,
+    y = ~vehicle_perc_damage*100,
+    frame = ~SLR,
+    type = 'scatter',
+    mode = 'markers',
+    marker = list(
+      color = 'rgba(17,157,255,0.1)',
+      size = 15,
+      opacity = 1
+    ),
+    showlegend = F
+  ) %>%
+  add_trace(
+    data = vehicle_vulnerability,
+    x = ~depth,
+    y = ~perc_damage*100,
+    type = 'scatter',
+    mode = 'markers',
+    marker = list(
+      color = 'rgb(0,0,0)'
+    ),
+    showlegend = F
+  ) %>%
+  layout(
+    xaxis = list(
+      title = "Average Flood Depth",
+      zeroline = FALSE
+    ),
+    yaxis = list(
+      title = "Percent Damage"
+    ),
+    title = "Sharp Park vehicle damage during<br>100-year storm, by base sea level rise"
+  ) %>%
+  config(displayModeBar = F)
+
+pac_vehicle_perc_damage_plot
+
+# Plot housing vulnerability
+pac_house_perc_damage_plot <-
+  expand.grid(
+    osm_id = unique(pac_perc_damage$osm_id),
+    SLR = unique(pac_perc_damage$SLR),
+    RP = unique(pac_perc_damage$RP)
+  ) %>%
+  left_join(pac_perc_damage) %>%
+  mutate(
+    avg_depth = ifelse(
+      is.na(avg_depth),
+      0,
+      avg_depth
+    ),
+    house_perc_damage = ifelse(
+      is.na(house_perc_damage),
+      0,
+      house_perc_damage
+    )
+  )
+
+pac_house_perc_damage_plot <-
+  plot_ly() %>%
+  add_trace(
+    data = 
+      pac_house_perc_damage_plot %>%
+      filter(RP == "100") %>%
+      mutate(
+        SLR = SLR %>% as.numeric()),
+    x = ~avg_depth,
+    y = ~house_perc_damage*100,
+    frame = ~SLR,
+    type = 'scatter',
+    mode = 'markers',
+    marker = list(
+      color = 'rgba(17,157,255,0.1)',
+      size = 15,
+      opacity = 1
+    ),
+    showlegend = F
+  ) %>%
+  add_trace(
+    data = house_vulnerability,
+    x = ~depth+2,
+    y = ~perc_damage*100,
+    type = 'scatter',
+    mode = 'markers',
+    marker = list(
+      color = 'rgb(0,0,0)'
+    ),
+    showlegend = F
+  ) %>%
+  layout(
+    xaxis = list(
+      title = "Average Flood Depth",
+      zeroline = FALSE
+    ),
+    yaxis = list(
+      title = "Percent Damage"
+    ),
+    title = 
+      "Sharp Park building damage during<br>
+    100-year storm, by base sea level rise"
+  ) %>%
+  config(displayModeBar = F)
+
+pac_house_perc_damage_plot
+```
+ 
+From the above plots, you can see that damage to homes and vehicles does not occur for SLR of 1 m or less. The first building to experience damage is the popular Chit Chat Café located at the base of the pier, but there is a sharp increase in expected damage from 1.5 to 2 m of SLR.
+
+Assuming an average vehicle cost of \$22,000 (USACE's market value for mid-size vehicles) and a home cost of \$200 per square foot, I next estimated the cost to residents for each scenario. 
+
+```{r calculate building and vehicle damage costs, message = F, error = F, warning = F}
+# get building damage costs
+projection <- "+proj=utm +zone=10 +ellps=GRS80 +datum=NAD83 +units=ft +no_defs"
+
+pac_damage <-
+  pac_perc_damage %>% 
+  left_join(
+    sp_bldg %>%
+      st_transform(projection) %>% 
+      mutate(
+        area = st_area(.) %>% as.numeric()
+      ) %>%
+      st_set_geometry(NULL) %>% 
+      select(osm_id, area)
+  ) %>% 
+  mutate(
+    `Building Damage` = area * 200 * house_perc_damage,
+    `Vehicle Damage 2020` = 22000*vehicle_perc_damage*Vehicles2020,
+    `Vehicle Damage 2050` = 22000*vehicle_perc_damage*Vehicles2050
+  ) %>%
+  replace(is.na(.),0)
+
+total_damage_plot <-
+  pac_damage %>%
+  filter(RP == 100) %>%
+  select(SLR,"Building Damage","Vehicle Damage 2050") %>%
+  group_by(SLR) %>%
+  summarize(
+    "Total Damage" = sum(`Building Damage`) + sum(`Vehicle Damage 2050`)
+  )
+
+library(scales)
+ggplot() + 
+      geom_line(
+        data = total_damage_plot,
+        aes(
+          x = SLR,
+          y = `Total Damage`
+        ),
+        color = "red",
+        size = 1
+      ) + 
+  scale_y_log10(breaks = trans_breaks("log10", function(x) 10^x),
+              labels = trans_format("log10", math_format(10^.x))) +
+     theme_bw() +
+  labs(
+    x = "Sea Level Rise (cm)",
+    y = "Total Damage ($)",
+    title = "Sharp Park damage in 2050 by sea level rise for a 100 year storm"
+  )
+
+```
+While the total damage from 1 m of SLR and a 100 year storm event was only $144, the damage from 2 m was over \$8.5 million and the damage from 3 m was \$27 million.
+
+The map below shows the distribution of these damages to existing buildings in Sharp Park. 
+
+```{r plot building and vehicle damage under different scenarios, message = F, warning = F, error = F}
+
+pac_damage_map <-
+  pac_damage %>% 
+  filter(
+    RP == 100,
+    osm_id != 0
+    ) %>%
+  mutate(
+    "Total Damage" = `Building Damage` + `Vehicle Damage 2050`
+  ) %>%
+  select(osm_id,SLR,`Total Damage`) %>%
+  pivot_wider(
+    names_from = SLR,
+    values_from = `Total Damage`
+  ) %>%
+  replace(is.na(.), 0) %>%
+  left_join(
+    sp_bldg %>% select(osm_id)
+  ) %>%
+  st_as_sf()
+  
+
+damage_pal <- colorNumeric(
+  palette = "Reds",
+  domain = c(0,pac_damage_map$`300`)
+)
+
+pac_damage_map %>%
+  leaflet() %>% 
+  addMapboxTiles(
+    style_id = "light-v9",
+    username = "mapbox"
+  ) %>% 
+  addPolygons(
+    fillColor = ~damage_pal(`100`),
+    color = "gray",
+    fillOpacity = 1,
+    opacity = 1,
+    weight = 0.25,
+    highlightOptions = highlightOptions(
+      color = "white",
+      weight = 2
+    ),
+    label = ~paste0("$",prettyNum(signif(`100`,2))),
+    group = "1 m SLR"
+  ) %>% 
+  addPolygons(
+    fillColor = ~damage_pal(`200`),
+    color = "gray",
+    fillOpacity = 1,
+    opacity = 1,
+    weight = 0.25,
+    highlightOptions = highlightOptions(
+      color = "white",
+      weight = 2
+    ),
+    label = ~paste0("$",prettyNum(signif(`200`,2))),
+    group = "2 m SLR"
+  ) %>% 
+  addPolygons(
+    fillColor = ~damage_pal(`300`),
+    color = "gray",
+    fillOpacity = 1,
+    opacity = 1,
+    weight = 0.25,
+    highlightOptions = highlightOptions(
+      color = "white",
+      weight = 2
+    ),
+    label = ~paste0("$",prettyNum(signif(`300`,2))),
+    group = "3 m SLR"
+  ) %>% 
+  addLegend(
+    pal = damage_pal,
+    values = ~`300`,
+    title = "$ Damage"
+  ) %>% 
+  addLayersControl(
+    baseGroups = c("1 m SLR","2 m SLR","3 m SLR"),
+    options = layersControlOptions(collapsed = FALSE)
+  ) %>% 
+  showGroup("2 m SLR")
+
+```
+
+
+In the next section, I used the methods from class to calculate the average annualized losses for Sharp Park. Unfortunately for the analysis (but fortunately for the city), I realized at this point that the only SLR scenarios that matter for AAL are 1 m and below, because the risk of a greater amount of sea level rise before the end of the century is extremely small (Kopp et al. 2014). The only building that had non-zero AAL was the Chit Chat Café on the pier (which has an AAL of about 0.2 cents). 
+
+```{r calculate building and vehicle AAL, message = F, warning = F, error = F}
+pac_bldg_aal_by_slr <-
+  pac_damage %>% 
+  select(osm_id,SLR,RP,`Building Damage`) %>%
+  pivot_wider(
+    names_from = RP,
+    values_from = `Building Damage`
+  ) %>% 
+  replace(is.na(.), 0) %>% 
+  mutate(
+    `damage` = 
+      0.95*(`1`+`20`)/2 + 
+      0.04*(`20`+`100`)/2 + 
+      0.01*(`100`)
+  ) %>% 
+  select(osm_id, SLR, damage) %>%
+  mutate(
+    SLR = str_pad(SLR, 3 , "left", "0")
+  )
+  
+
+rcp85 <- read_csv("rcp85_sanfrancisco.csv")
+
+pac_bldg_aal_by_year <- 
+  pac_bldg_aal_by_slr %>% 
+  left_join(
+    rcp85 %>% 
+      mutate(
+        SLR = str_pad(`SLR (cm)`, 3 , "left", "0")
+      ) %>% 
+      select(
+        SLR,
+        `2020`,
+        `2030`,
+        `2040`,
+        `2050`,
+        `2100`
+      )
+  ) %>% 
+  pivot_longer(
+    c(`2020`:`2050`,`2100`),
+    names_to = "year",
+    values_to = "occurrence"
+  ) %>% 
+  pivot_longer(
+    c(damage,occurrence),
+    names_to = "key",
+    values_to = "value"
+  ) %>% 
+  pivot_wider(
+    names_from = c("key","SLR"),
+    values_from = value
+  ) %>% 
+  replace(is.na(.), 0) %>% 
+  mutate(
+    damage = 
+      occurrence_000 * (damage_000 + damage_025)/2 + 
+      occurrence_025 * (damage_025 + damage_050)/2 + 
+      occurrence_050 * (damage_050 + damage_075)/2 + 
+      occurrence_075 * (damage_075 + damage_100)/2 +
+      occurrence_100 * (damage_100)
+  ) %>% 
+  select(osm_id, year, damage)
+
+pac_bldg_aal_by_year %>%
+  group_by(year) %>%
+  summarise(
+    damage = sum(damage)
+  )
+
+pac_bldg_aal <-
+  pac_bldg_aal_by_year %>% 
+  pivot_wider(
+    names_from = year,
+    values_from = damage
+  ) %>% 
+  mutate(
+    AAL = (`2020`*5 + `2030`*10 + `2040`*10 + `2050`*5)/30
+  ) %>% 
+  left_join(
+    pac_bldg_flooded_max %>%
+      select(osm_id) %>% 
+      st_centroid()
+  ) %>% 
+  st_as_sf() %>% 
+  st_transform(4269) %>% 
+  st_join(sp_cbgs %>% st_transform(4269)) %>% 
+  st_set_geometry(NULL) %>% 
+  group_by(GEOID) %>% 
+  summarize(
+    AAL = sum(AAL),
+    count = n()
+  ) %>% 
+  left_join(sp_cbgs) %>% 
+  st_as_sf()
+
+pac_bldg_aal %>%
+  select(GEOID, AAL) %>%
+  filter(!is.na(GEOID)) %>%
+  st_set_geometry(NULL)
+
+```
+
+```{r same for vehicles, message = F, warning = F, error = F}
+
+pac_vehicle_aal_by_slr <-
+  pac_damage %>% 
+  select(osm_id,SLR,RP,`Vehicle Damage 2020`) %>%
+  pivot_wider(
+    names_from = RP,
+    values_from = `Vehicle Damage 2020`
+  ) %>% 
+  replace(is.na(.), 0) %>% 
+  mutate(
+    `damage` = 
+      0.95*(`1`+`20`)/2 + 
+      0.04*(`20`+`100`)/2 + 
+      0.01*(`100`)
+  ) %>% 
+  select(osm_id, SLR, damage) %>%
+  mutate(
+    SLR = str_pad(SLR, 3 , "left", "0")
+  )
+  
+  
+pac_vehicle_aal_by_year <- 
+  pac_vehicle_aal_by_slr %>% 
+  left_join(
+    rcp85 %>% 
+      mutate(
+        SLR = str_pad(`SLR (cm)`, 3 , "left", "0")
+      ) %>% 
+      select(
+        SLR,
+        `2020`,
+        `2030`,
+        `2040`,
+        `2050`,
+        `2100`
+      )
+  ) %>% 
+  pivot_longer(
+    c(`2020`:`2050`,`2100`),
+    names_to = "year",
+    values_to = "occurrence"
+  ) %>% 
+  left_join(
+    emfac %>% dplyr::select(increase,year)
+  ) %>% 
+  mutate(
+    damage = damage*increase
+  ) %>%
+  select(-increase) %>%
+  pivot_longer(
+    c(damage,occurrence),
+    names_to = "key",
+    values_to = "value"
+  ) %>% 
+  pivot_wider(
+    names_from = c("key","SLR"),
+    values_from = value
+  ) %>% 
+  replace(is.na(.), 0) %>% 
+  mutate(
+    damage = 
+      occurrence_000 * (damage_000 + damage_025)/2 + 
+      occurrence_025 * (damage_025 + damage_050)/2 + 
+      occurrence_050 * (damage_050 + damage_075)/2 + 
+      occurrence_075 * (damage_075 + damage_100)/2 +
+      occurrence_100 * (damage_100)
+  ) %>% 
+  select(osm_id, year, damage)
+
+pac_vehicle_aal <-
+  pac_vehicle_aal_by_year %>% 
+  pivot_wider(
+    names_from = year,
+    values_from = damage
+  ) %>% 
+  mutate(
+    AAL = (`2020`*5 + `2030`*10 + `2040`*10 + `2050`*5)/30
+  ) %>% 
+  left_join(
+    pac_bldg_flooded_max %>%
+      select(osm_id) %>% 
+      st_centroid()
+  ) %>% 
+  st_as_sf() %>% 
+  st_transform(4269) %>% 
+  st_join(sp_cbgs %>% st_transform(4269)) %>% 
+  st_set_geometry(NULL) %>% 
+  group_by(GEOID) %>% 
+  summarize(
+    AAL = sum(AAL),
+    count = n()
+  ) %>% 
+  left_join(sp_cbgs) %>% 
+  st_as_sf()
+
+pac_vehicle_aal %>%
+  select(GEOID, AAL) %>%
+  filter(!is.na(GEOID)) %>%
+  st_set_geometry(NULL)
+
+```
+Clearly according to these AAL values, it does not make financial sense to spend a lot of money building up coastal defenses. This probabilistic projection does not include the H++ scenario however, and the actual risks of flooding might be much larger by the end of the century. The damages of flooding will almost undoubtedly increase in the future as well, especially if the region is redeveloped with more housing and commercial businesses. Additionally, there are several dimensions of risk that were not included in this analysis, including risk to city utilities like sewer, stormwater, water, gas and electrical service, which are all located under the street running along the seawall. Pacifica City Hall, Council Chambers and a wastewater pump station are also in the area. 
+
+Personal experience also casts some doubts on the accuracy of the flood maps, given that storm events in the past decade have caused over-topping of the seawall and flooding in Sharp Park even without sea level rise. Additionally, including the risk of seawall breaching, which I expect the model does not account for, would likely have a substantial effect on the AAL results. Accounting for all of these different risk factors is essential for planning the future of the Sharp Park neighborhood.
